@@ -1,77 +1,90 @@
+// Minimalversion: DHT11 auslesen, Werte per MQTT publishen und per REST (GET /data) bereitstellen.
+// WIFI_SSID, WIFI_PASSWORD, MQTT_BROKER_HOST, MQTT_USER, MQTT_PASSWORD kommen aus .env (load_env.py).
 #include <Arduino.h>
-#include "sensors/my_sensor.h" // Unser konkreter Sensor
-#include "Sensor.h"           // Die Sensor-Basisklasse
+#include <WiFi.h>
+#include <WebServer.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <DHT.h>
 
-// ----- Globale Definitionen -----
-// Diese Objekte werden von der Sensor-Klasse als 'extern' erwartet.
-WiFiClient espClient;              // Unverschlüsselt (Port 1883)
-WiFiClientSecure espClientSecure;  // TLS (Port 8883)
-PubSubClient mqttClient(espClient);
+const int MQTT_PORT = 1883;
+const unsigned long SEND_INTERVAL = 5000; // ms
+
+DHT dht(4, DHT11);
+WiFiClient espClient;
+PubSubClient mqtt(espClient);
 WebServer server(80);
-Preferences preferences;
 
-// ----- Sensor-Instanz erstellen -----
-// Hier wird der Sensor konfiguriert.
-// Parameter: Ort, Beschreibung, true/false für sichere/unsichere MQTT-Verbindung
-// Der Kurs-Broker läuft unverschlüsselt auf Port 1883 -> false
-MyTempSensor mySensor("Wohnzimmer", "Temperatur und Luftfeuchte", false);
+String sensorId;
+String topic;
+float temperature = NAN;
+float humidity = NAN;
+unsigned long lastSend = 0;
 
+String buildJson() {
+    JsonDocument doc;
+    doc["sensorId"] = sensorId;
+    doc["timestamp"] = millis();
+    doc["temperature"] = temperature;
+    doc["humidity"] = humidity;
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+void reconnectMqtt() {
+    while (!mqtt.connected()) {
+        Serial.print("MQTT connect...");
+        if (mqtt.connect(sensorId.c_str(), MQTT_USER, MQTT_PASSWORD)) {
+            Serial.println("ok");
+        } else {
+            Serial.printf("failed, rc=%d, retry in 5s\n", mqtt.state());
+            delay(5000);
+        }
+    }
+}
 
 void setup() {
     Serial.begin(115200);
-    delay(1000); // Gibt der seriellen Konsole Zeit, sich zu verbinden
+    dht.begin();
 
-    // Das WIFI_SSID, WIFI_PASSWORD und MQTT_BROKER_HOST Makro wird
-    // zur Kompilierzeit von platformio.ini hier eingesetzt.
-    mySensor.setupWifiAndMqtt();
-    mySensor.setupRestApi();
+    char chipId[13];
+    snprintf(chipId, sizeof(chipId), "%012llX", ESP.getEfuseMac());
+    sensorId = String("ESP32_Sensor_") + chipId;
+    topic = "iiot/sensors/" + sensorId + "/data";
 
-    Serial.println("Setup complete. Starting main loop...");
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+    Serial.print("WiFi connect");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println("\nIP: " + WiFi.localIP().toString());
+
+    mqtt.setServer(MQTT_BROKER_HOST, MQTT_PORT);
+
+    // REST: GET /data -> letzter Messwert als JSON
+    server.on("/data", HTTP_GET, []() { server.send(200, "application/json", buildJson()); });
+    server.begin();
+    Serial.println("REST: http://" + WiFi.localIP().toString() + "/data");
+    Serial.println("MQTT topic: " + topic);
 }
 
 void loop() {
-    mySensor.loop();
-    mySensor.handleRestApi();
-}
+    if (!mqtt.connected()) reconnectMqtt();
+    mqtt.loop();
+    server.handleClient();
 
-
-// ----- Implementierung der restlichen Sensor-Methoden -----
-// Da sie im Header nur deklariert wurden, müssen sie hier implementiert werden.
-// Alternativ könnte man eine Sensor.cpp-Datei erstellen.
-
-void Sensor::publishSensorData(float value) {
-    JsonDocument doc;
-    doc["sensorId"] = sensorId;
-    doc["sensorName"] = sensorName;
-    doc["timestamp"] = millis();
-    buildSensorDataJson(doc, value); // Ruft die Methode der abgeleiteten Klasse auf
-    String output;
-    serializeJson(doc, output);
-    if (mqttClient.publish(mqttTopicData.c_str(), output.c_str())) {
-        Serial.println("Published data: " + output);
-    } else {
-        Serial.println("Failed to publish data.");
+    if (millis() - lastSend >= SEND_INTERVAL) {
+        lastSend = millis();
+        temperature = dht.readTemperature();
+        humidity = dht.readHumidity();
+        if (isnan(temperature)) {
+            Serial.println("DHT read failed");
+            return;
+        }
+        String payload = buildJson();
+        bool ok = mqtt.publish(topic.c_str(), payload.c_str());
+        Serial.println((ok ? "Published: " : "Publish failed: ") + payload);
     }
 }
-
-void Sensor::publishMetadata() {
-    JsonDocument doc;
-    doc["sensorId"] = sensorId;
-    doc["sensorName"] = sensorName;
-    doc["type"] = metadata.type;
-    doc["unit"] = metadata.unit;
-    // ... (Rest der Metadaten)
-    String output;
-    serializeJson(doc, output);
-    if (mqttClient.publish(mqttTopicMeta.c_str(), output.c_str(), true)) {
-        Serial.println("Published metadata (retained): " + output);
-    } else {
-        Serial.println("Failed to publish metadata.");
-    }
-}
-
-void Sensor::setupRestApi() { /* ... Implementierung der REST API ... */ }
-void Sensor::handleRestApi() { server.handleClient(); }
-void Sensor::handleGetSettings() { /* ... */ }
-void Sensor::handlePostSettings() { /* ... */ }
-void Sensor::mqttCallback(char* topic, byte* payload, unsigned int length) { /* ... */ }
