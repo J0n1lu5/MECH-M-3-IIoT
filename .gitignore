@@ -10,3 +10,6 @@ _site/
 .env
 
 **/*.quarto_ipynb
+
+# ESP32: ausgefüllte Konfiguration mit Passwörtern (Vorlage: src/esp32_firmware/settings.toml)
+src/esp32_firmware/data/

@@ -1,0 +1,39 @@
+# settings.toml – Vorlage für den ESP32 (nur Platzhalter, KEINE echten Passwörter eintragen)
+#
+# So geht's (siehe README):
+#   1. Diese Datei nach data/settings.toml kopieren   (data/ steht in .gitignore)
+#   2. In data/settings.toml WLAN- und MQTT-Passwort eintragen
+#   3. pio run -t uploadfs   kopiert data/ auf den ESP32, danach Gerät neu starten
+#
+# Format: schluessel = "text" oder schluessel = 123, Kommentare mit #
+
+# --- Geräteeinstellungen ---
+# Eindeutiger Name des Sensors, wird als MQTT-Client-ID und sensor_id verwendet.
+device_id = "nockenberg-pluder-esp32-01"
+names = "nockenberg-pluder"
+location = "Produktionshalle 1, Innsbruck"
+
+# --- WLAN-Einstellungen (vor Ort eintragen) ---
+wifi_ssid = "yourmuesli-produktion"
+wifi_password = "SehrGeheimesPasswort123"
+
+# --- MQTT Broker Einstellungen ---
+broker_address = "158.180.44.197"
+broker_port = 1883
+mqtt_username = "bobm"
+# Passwort wird in der Vorlesung bekanntgegeben.
+mqtt_password = "In Vorlesung erfragen"
+
+# Topics, Struktur siehe docs/iot-specs/conventions.md
+telemetry_topic = "iiot/group/nockenberg-pluder/sensor/temperature/state"
+# Status als JSON {"status": "ok" | "error" | "offline"}, retained, Last Will = offline
+status_topic = "iiot/group/nockenberg-pluder/status"
+
+# Zeitserver für UTC-Zeitstempel (UDP 123, muss in der Firewall erlaubt sein)
+ntp_server = "pool.ntp.org"
+
+# --- Sensor & Applikation ---
+# Sendeintervall in Sekunden (mindestens 2). Kann per POST /config geändert werden.
+reading_interval_seconds = 60
+# GPIO des ESP32, an dem die Datenleitung des DHT11 hängt
+sensor_pin = 4

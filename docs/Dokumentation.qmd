@@ -12,6 +12,8 @@ Der Einstieg in Ihre Dokumentation ist das `README.md` Ihres Forks, siehe [Abgab
 
 ### Konfiguration und Start des Mikrocontrollers
 
+Ein per `POST /config` gesetztes Sendeintervall gilt bis zum nächsten Neustart. Danach wird wieder `reading_interval_seconds` aus `settings.toml` verwendet. Dauerhaft ändert man das Intervall dort und spielt die Datei mit `pio run -t uploadfs` erneut auf.
+
 ### Empfehlungen für die IT-Abteilung
 
 
