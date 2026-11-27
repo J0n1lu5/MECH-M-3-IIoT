@@ -12,7 +12,7 @@ Der Einstieg in Ihre Dokumentation ist das `README.md` Ihres Forks, siehe [Abgab
 
 ### Konfiguration und Start des Mikrocontrollers
 
-Ein per `POST /config` gesetztes Sendeintervall gilt bis zum nächsten Neustart. Danach wird wieder `reading_interval_seconds` aus `settings.toml` verwendet. Dauerhaft ändert man das Intervall dort und spielt die Datei mit `pio run -t uploadfs` erneut auf.
+Ein per `POST /config` gesetztes Sendeintervall gilt bis zum nächsten Neustart. Danach wird wieder `READING_INTERVAL_SECONDS` aus der `.env` verwendet. Dauerhaft ändert man das Intervall dort und spielt es mit `pio run -t uploadfs` (im Ordner `src/esp32_firmware`) erneut auf.
 
 ### Empfehlungen für die IT-Abteilung
 
@@ -26,10 +26,12 @@ Ein per `POST /config` gesetztes Sendeintervall gilt bis zum nächsten Neustart.
 
 ### Struktur des Projekts
 
-- `docs/`: Quarto Dokumentation
-- `docs/iot-specs`: Spezifikationen für IoT-Geräte
-- `docs/images`: Bilder für die Dokumentation
-- `src/esp32_firmware`: Quellcode mit Ansätzen für die Firmware-Entwicklung
-- `src/raspi_firmware`: Quellcode mit Ansätzen für die Firmware-Entwicklung
-- `src/cloud`: Ihre containerisierte Lösung aus Termin 3 (von Ihnen anzulegen)
-- `tests/`: Ihre Testfälle für die HTTP-API aus Termin 2 (von Ihnen anzulegen)
+Siehe [README](../README.md#struktur-des-repositories). Kurz:
+
+- `.env.example`: Vorlage für alle Einstellungen (ESP32 und Container)
+- `docker-compose.yml`: Container-Stack (InfluxDB, ingest, Grafana)
+- `src/esp32_firmware`: Firmware für den ESP32 (PlatformIO/Arduino)
+- `src/ingest`: MQTT → InfluxDB
+- `src/Dashboard`: Grafana-Provisioning und Dashboard
+- `tests/`: Testfälle für die HTTP-API aus Termin 2
+- `docs/`: Quarto-Dokumentation, `docs/iot-specs`: Spezifikationen, `docs/images`: Bilder
