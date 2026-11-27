@@ -17,7 +17,7 @@ Aufgabenstellung und Kursunterlagen: <https://jhumci.github.io/MECH-M-3-IIoT/>
 
 ## Video
 
-TODO: Link zur Bildschirmaufnahme (3–5 min) nach dem Hochladen hier eintragen
+[Video](https://youtu.be/aRUb0O1-bOA) 
 
 ## Erreichter Stand
 
@@ -281,8 +281,3 @@ Da sich die IPs von `pool.ntp.org` ändern, ist es einfacher, einen festen inter
 ## Sicherheit
 
 Diese Lösung ist ein Prototyp. Eine Produktivversion bräuchte zusätzlich: TLS für MQTT (Port 8883) mit eigenen Zugangsdaten pro Gerät statt eines gemeinsamen Kurs-Kontos, ACLs am Broker, damit jedes Gerät nur auf sein eigenes Topic schreiben darf, Authentifizierung und HTTPS für die HTTP-API oder deren Ersatz durch Konfiguration über MQTT, signierte Firmware-Updates über das Netz (OTA), Grafana hinter einem Reverse-Proxy mit HTTPS statt offenem Port 3000, Backups der InfluxDB-Volumes, ein Monitoring des `ingest`-Dienstes und eine sichere Verwaltung der Zugangsdaten (z.B. Docker Secrets statt `.env`). Der Flash des ESP32 ist nicht verschlüsselt. Wer das Gerät in die Hände bekommt, kann WLAN- und MQTT-Passwort auslesen.
-
-## Für Entwickler
-
-- Kursunterlagen lokal bauen: `pdm install`, dann `pdm run quarto preview`. Bei jedem Push auf `main` baut eine GitHub Action die Website ([`.github/workflows/publish.yml`](.github/workflows/publish.yml)).
-- Weitere Details: [`docs/Dokumentation.qmd`](docs/Dokumentation.qmd)
