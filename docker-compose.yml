@@ -1,0 +1,68 @@
+# Start:  cp .env.example .env  (ausfüllen), dann  docker compose up -d
+# Dashboard: http://localhost:3000  (Benutzer admin, Passwort GRAFANA_ADMIN_PASSWORD aus .env)
+
+services:
+  influxdb:
+    image: docker.io/library/influxdb:2.10
+    restart: unless-stopped
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: ${INFLUXDB_ADMIN_USER:?in .env setzen}
+      DOCKER_INFLUXDB_INIT_PASSWORD: ${INFLUXDB_ADMIN_PASSWORD:?in .env setzen}
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: ${INFLUXDB_ADMIN_TOKEN:?in .env setzen}
+      DOCKER_INFLUXDB_INIT_ORG: ${INFLUXDB_ORG:?in .env setzen}
+      DOCKER_INFLUXDB_INIT_BUCKET: ${INFLUXDB_BUCKET:?in .env setzen}
+    volumes:
+      - influxdb-data:/var/lib/influxdb2
+      - influxdb-config:/etc/influxdb2
+    ports:
+      - "127.0.0.1:8086:8086"  # nur lokal: Blick in die Datenbank über die InfluxDB-Oberfläche
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 5s
+      retries: 20
+
+  ingest:
+    build: src/ingest
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      MQTT_HOST: ${MQTT_HOST:?in .env setzen}
+      MQTT_PORT: ${MQTT_PORT:-1883}
+      MQTT_USERNAME: ${MQTT_USERNAME:?in .env setzen}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:?in .env setzen}
+      MQTT_CLIENT_ID_PREFIX: nockenberg-pluder-ingest
+      INFLUXDB_URL: http://influxdb:8086
+      INFLUXDB_TOKEN: ${INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+
+  grafana:
+    image: docker.io/grafana/grafana:13.3.2
+    restart: unless-stopped
+    depends_on:
+      influxdb:
+        condition: service_healthy
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?in .env setzen}
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/iiot.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      GF_NEWS_NEWS_FEED_ENABLED: "false"
+      INFLUXDB_TOKEN: ${INFLUXDB_ADMIN_TOKEN}
+      INFLUXDB_ORG: ${INFLUXDB_ORG}
+      INFLUXDB_BUCKET: ${INFLUXDB_BUCKET}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./src/Dashboard/provisioning:/etc/grafana/provisioning:ro
+      - ./src/Dashboard/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+
+volumes:
+  influxdb-data:
+  influxdb-config:
+  grafana-data:
