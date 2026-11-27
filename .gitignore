@@ -5,11 +5,17 @@ __pycache__/
 .pdm-python
 /.quarto/
 _site/
-# PlatformIO / Zugangsdaten
+# PlatformIO / IDE-Artefakte (compile_commands.json enthält lokale Pfade)
 .pio/
+compile_commands.json
+.cache/
+
+# Zugangsdaten: nur .env.example wird eingecheckt
 .env
+.env.*
+!.env.example
+# ESP32: aus .env generiert (load_env.py), enthält WLAN- und MQTT-Passwort
+src/esp32_firmware/data/
 
 **/*.quarto_ipynb
 
-# ESP32: ausgefüllte Konfiguration mit Passwörtern (Vorlage: src/esp32_firmware/settings.toml)
-src/esp32_firmware/data/
