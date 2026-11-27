@@ -1,22 +1,24 @@
 // ESP32 + DHT11: Messwerte per MQTT senden, Konfiguration per HTTP (siehe docs/iot-specs).
-// Alle Einstellungen stehen in data/settings.toml (Vorlage: ../settings.toml), siehe README.
+// Alle Einstellungen stehen in der .env im Hauptverzeichnis. load_env.py erzeugt daraus beim
+// Build data/settings.toml, die per `pio run -t uploadfs` ins LittleFS kommt, siehe README.
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 #include <LittleFS.h>
 #include <PubSubClient.h>
-#include <WebServer.h>
 #include <WiFi.h>
 #include <map>
 
 std::map<String, String> settings;  // Inhalt von settings.toml
-String deviceId, telemetryTopic, statusTopic, lastWill, brokerAddress;  // global, da PubSubClient nur Zeiger speichert
+String deviceId, telemetryTopic, humidityTopic, statusTopic, lastWill, brokerAddress;  // global, da PubSubClient nur Zeiger speichert
+String ntpServer;  // global, da configTime/SNTP nur den Zeiger auf den Namen speichert
 unsigned long intervalSeconds = 60;
+const unsigned long MAX_INTERVAL_SECONDS = 4294967;  // ULONG_MAX / 1000, wie in tests/mock_device.py
 
 DHT* dht;
 WiFiClient wifiClient;
 PubSubClient mqtt(wifiClient);
-WebServer server(80);
+WiFiServer httpServer(80);
 
 unsigned long lastReading = 0;
 unsigned long lastMqttAttempt = 0;
@@ -135,49 +137,118 @@ void measureAndPublish() {
         lastTemperature = temperature;
         Serial.println("Gesendet: " + payload);
     }
-}
 
-// ---------- HTTP-API (openapi.yaml) ----------
-
-void sendJson(int code, JsonDocument& doc) {
-    String body;
-    serializeJson(doc, body);
-    server.send(code, "application/json", body);
-}
-
-void sendError(int code, const String& message) {
-    JsonDocument doc;
-    doc["error"] = message;
-    sendJson(code, doc);
-}
-
-void handleConfig() {
-    JsonDocument doc;
-    if (server.method() == HTTP_GET) {
-        doc["device_id"] = deviceId;
-        doc["reading_interval_seconds"] = intervalSeconds;
-        sendJson(200, doc);
-    } else if (server.method() == HTTP_POST) {
-        JsonDocument body;
-        if (deserializeJson(body, server.arg("plain")) || !body.is<JsonObject>()) {
-            return sendError(400, "Fehlerhaftes JSON");
-        }
-        JsonVariant interval = body["reading_interval_seconds"];
-        if (!interval.is<long>() || interval.as<long>() < 2) {
-            return sendError(400, "reading_interval_seconds muss eine Ganzzahl >= 2 sein");
-        }
-        // device_id wird ignoriert: Sie darf per POST nicht geändert werden.
-        intervalSeconds = interval.as<long>();
-        Serial.printf("Neues Intervall: %lu s\n", intervalSeconds);
-        doc["reading_interval_seconds"] = intervalSeconds;
-        sendJson(200, doc);
-    } else {
-        sendError(405, "Nur GET und POST erlaubt");
+    // Zusätzlich die Luftfeuchte auf einem eigenen Topic, wie es andere Gruppen machen
+    // (nicht in asyncapi.yaml vorgeschrieben, aber dasselbe Schema wie die Temperatur).
+    JsonDocument humidityDoc;
+    humidityDoc["timestamp"] = timestamp;
+    humidityDoc["sensor_id"] = deviceId;
+    humidityDoc["value"] = humidity;
+    humidityDoc["unit"] = "%";
+    String humidityPayload;
+    serializeJson(humidityDoc, humidityPayload);
+    if (mqtt.publish(humidityTopic.c_str(), humidityPayload.c_str())) {
+        Serial.println("Gesendet: " + humidityPayload);
     }
 }
 
-void handleStatus() {
-    if (server.method() != HTTP_GET) return sendError(405, "Nur GET erlaubt");
+// ---------- HTTP-API (openapi.yaml) ----------
+// Eigener, minimaler HTTP-Server auf WiFiServer statt der WebServer-Bibliothek: Diese schließt bei
+// unbekannten Methoden (z.B. QUERY) die Verbindung ohne Antwort und hängt bei multipart/form-data.
+// Verhalten wie tests/mock_device.py: jede Methode wird beantwortet, der Body wird immer als JSON gelesen.
+
+const unsigned long HTTP_TIMEOUT_MS = 2000;  // länger wartet das Gerät nicht auf eine Anfrage
+const long MAX_BODY_BYTES = 1024;
+const unsigned int MAX_LINE_LENGTH = 512;
+
+String toJson(JsonDocument& doc) {
+    String out;
+    serializeJson(doc, out);
+    return out;
+}
+
+String jsonError(const String& message) {
+    JsonDocument doc;
+    doc["error"] = message;
+    return toJson(doc);
+}
+
+const char* reasonPhrase(int code) {
+    switch (code) {
+        case 200: return "OK";
+        case 400: return "Bad Request";
+        case 404: return "Not Found";
+        case 405: return "Method Not Allowed";
+        case 413: return "Payload Too Large";
+        default: return "Error";
+    }
+}
+
+void sendResponse(WiFiClient& client, const String& method, int code, const String& body, const char* allow = nullptr) {
+    String head = "HTTP/1.1 " + String(code) + " " + reasonPhrase(code) + "\r\n";
+    head += "Content-Type: application/json\r\n";
+    head += "Content-Length: " + String(body.length()) + "\r\n";
+    if (allow) head += "Allow: " + String(allow) + "\r\n";
+    head += "Connection: close\r\n\r\n";
+    client.print(head);
+    if (method != "HEAD") client.print(body);
+}
+
+bool timeLeft(unsigned long deadline) { return (long)(deadline - millis()) > 0; }
+
+// Liest eine Zeile bis '\n' ohne Zeilenende. false bei Timeout, Verbindungsende oder zu langer Zeile.
+bool readLine(WiFiClient& client, String& line, unsigned long deadline) {
+    line = "";
+    while (timeLeft(deadline)) {
+        if (!client.available()) {
+            if (!client.connected()) return false;
+            delay(1);
+            continue;
+        }
+        char c = client.read();
+        if (c == '\n') {
+            line.trim();
+            return true;
+        }
+        if (line.length() >= MAX_LINE_LENGTH) return false;
+        line += c;
+    }
+    return false;
+}
+
+String configJson() {
+    JsonDocument doc;
+    doc["device_id"] = deviceId;
+    doc["reading_interval_seconds"] = intervalSeconds;
+    return toJson(doc);
+}
+
+int postConfig(const String& body, String& out) {
+    JsonDocument doc;
+    if (deserializeJson(doc, body) || !doc.is<JsonObject>()) {
+        out = jsonError("Fehlerhaftes JSON");
+        return 400;
+    }
+    // Jede ganze JSON-Zahl >= 2, auch 60.0 oder Werte über 2^63 (die ArduinoJson als Gleitkommazahl
+    // speichert), aber keine bool-Werte. Große Werte werden begrenzt, damit intervalSeconds * 1000
+    // (Millisekunden) nicht überläuft.
+    JsonVariant interval = doc["reading_interval_seconds"];
+    double value = interval.as<double>();
+    bool isNumber = !interval.is<bool>() && (interval.is<long long>() || interval.is<double>());
+    if (!isNumber || !isfinite(value) || value < 2 || value != floor(value)) {
+        out = jsonError("reading_interval_seconds muss eine Ganzzahl >= 2 sein");
+        return 400;
+    }
+    // device_id wird ignoriert: Sie darf per POST nicht geändert werden.
+    intervalSeconds = value > MAX_INTERVAL_SECONDS ? MAX_INTERVAL_SECONDS : (unsigned long)value;
+    Serial.printf("Neues Intervall: %lu s\n", intervalSeconds);
+    JsonDocument answer;
+    answer["reading_interval_seconds"] = intervalSeconds;
+    out = toJson(answer);
+    return 200;
+}
+
+String statusJson() {
     JsonDocument doc;
     doc["device_id"] = deviceId;
     doc["uptime_seconds"] = millis() / 1000;
@@ -197,7 +268,91 @@ void handleStatus() {
     } else {
         doc["last_humidity_percent"] = lastHumidity;
     }
-    sendJson(200, doc);
+    return toJson(doc);
+}
+
+// Beantwortet höchstens eine wartende Anfrage pro Aufruf.
+void handleHttp() {
+    WiFiClient client = httpServer.available();
+    if (!client) return;
+    unsigned long deadline = millis() + HTTP_TIMEOUT_MS;
+
+    // Anfragezeile, z.B. "POST /config HTTP/1.1"
+    String requestLine;
+    if (!readLine(client, requestLine, deadline)) {
+        client.stop();
+        return;
+    }
+    int firstSpace = requestLine.indexOf(' ');
+    int secondSpace = requestLine.indexOf(' ', firstSpace + 1);
+    if (firstSpace <= 0 || secondSpace < 0) {
+        sendResponse(client, "", 400, jsonError("Fehlerhafte Anfrage"));
+        client.stop();
+        return;
+    }
+    String method = requestLine.substring(0, firstSpace);
+    String path = requestLine.substring(firstSpace + 1, secondSpace);
+    if (path.indexOf('?') >= 0) path = path.substring(0, path.indexOf('?'));
+
+    // Header: nur Content-Length wird gebraucht
+    long contentLength = 0;
+    String line;
+    bool complete;
+    while ((complete = readLine(client, line, deadline)) && line.length() > 0) {
+        if (line.length() > 15 && line.substring(0, 15).equalsIgnoreCase("content-length:")) {
+            contentLength = line.substring(15).toInt();
+        }
+    }
+    if (!complete) {
+        client.stop();
+        return;
+    }
+    if (contentLength < 0 || contentLength > MAX_BODY_BYTES) {
+        sendResponse(client, method, 413, jsonError("Body zu groß"));
+        client.stop();
+        return;
+    }
+    String body;
+    while ((long)body.length() < contentLength && timeLeft(deadline)) {
+        if (client.available()) {
+            body += (char)client.read();
+        } else if (!client.connected()) {
+            break;
+        } else {
+            delay(1);
+        }
+    }
+
+    String out;
+    int code;
+    const char* allow = nullptr;
+    if (path == "/config") {
+        if (method == "GET") {
+            code = 200;
+            out = configJson();
+        } else if (method == "POST") {
+            code = postConfig(body, out);
+        } else {
+            code = 405;
+            out = jsonError("Nur GET und POST erlaubt");
+            allow = "GET, POST";
+        }
+    } else if (path == "/status") {
+        if (method == "GET") {
+            code = 200;
+            out = statusJson();
+        } else {
+            code = 405;
+            out = jsonError("Nur GET erlaubt");
+            allow = "GET";
+        }
+    } else {
+        code = 404;
+        out = jsonError("Unbekannter Pfad");
+    }
+    sendResponse(client, method, code, out, allow);
+    while (client.available()) client.read();  // Rest verwerfen, sonst sendet der TCP-Stack ein RST
+    client.stop();
 }
 
 // ---------- Start und Hauptschleife ----------
@@ -208,41 +363,40 @@ void setup() {
 
     if (!loadSettings()) {
         while (true) {
-            Serial.println("settings.toml fehlt: data/settings.toml anlegen und 'pio run -t uploadfs' ausfuehren");
+            Serial.println("settings.toml fehlt: .env ausfuellen und 'pio run -t uploadfs' ausfuehren");
             delay(5000);
         }
     }
     deviceId = setting("device_id");
     telemetryTopic = setting("telemetry_topic");
+    humidityTopic = setting("humidity_topic");
     statusTopic = setting("status_topic");
-    intervalSeconds = max(2L, setting("reading_interval_seconds", "60").toInt());
+    intervalSeconds = constrain(setting("reading_interval_seconds", "60").toInt(), 2L, (long)MAX_INTERVAL_SECONDS);
     lastWill = "{\"status\":\"offline\",\"sensor_id\":\"" + deviceId + "\"}";
 
     dht = new DHT(setting("sensor_pin", "4").toInt(), DHT11);
     dht->begin();
 
     WiFi.begin(setting("wifi_ssid").c_str(), setting("wifi_password").c_str());
-    Serial.print("WLAN verbinden");
+    Serial.print("WLAN verbinden mit " + setting("wifi_ssid"));
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
     }
     Serial.println("\nIP: " + WiFi.localIP().toString());
 
-    configTime(0, 0, setting("ntp_server", "pool.ntp.org").c_str());  // UTC
+    ntpServer = setting("ntp_server", "pool.ntp.org");
+    configTime(0, 0, ntpServer.c_str());  // UTC
     brokerAddress = setting("broker_address");
     mqtt.setServer(brokerAddress.c_str(), setting("broker_port", "1883").toInt());
 
-    server.on("/config", handleConfig);
-    server.on("/status", handleStatus);
-    server.onNotFound([]() { sendError(404, "Unbekannter Pfad"); });
-    server.begin();
+    httpServer.begin();
     Serial.println("HTTP-API: http://" + WiFi.localIP().toString() + "/status");
 }
 
 void loop() {
     keepMqttConnected();
-    server.handleClient();
+    handleHttp();
     if (lastReading == 0 || millis() - lastReading >= intervalSeconds * 1000) {
         lastReading = millis();
         measureAndPublish();
